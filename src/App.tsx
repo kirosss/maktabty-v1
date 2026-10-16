@@ -120,46 +120,58 @@ export default function App() {
   };
 
   // Hardware Barcode Scanner Global Keypress Listener
-  // Barcode scanner guns typically type characters very quickly (<40ms interval) ending with Enter
+  // Handheld USB/Bluetooth barcode guns send keystrokes rapidly ending with Enter
   const barcodeBufferRef = useRef<string>('');
   const lastKeyTimeRef = useRef<number>(0);
 
   useEffect(() => {
+    let clearTimer: NodeJS.Timeout;
+
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept if user is typing in standard form input/textarea/select
+      // If user is currently typing inside an input/textarea and the FastDeliveryModal is open,
+      // let the FastDeliveryModal handle it directly.
       const target = e.target as HTMLElement;
-      if (
+      const isInput =
         target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')
-      ) {
-        return;
-      }
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
 
       const now = Date.now();
       const diff = now - lastKeyTimeRef.current;
       lastKeyTimeRef.current = now;
 
+      // Clear buffer if more than 350ms elapsed since last keystroke (manual human typing or idle)
+      if (diff > 350) {
+        barcodeBufferRef.current = '';
+      }
+
       if (e.key === 'Enter') {
-        if (barcodeBufferRef.current.length >= 4) {
-          const scannedCode = barcodeBufferRef.current;
-          barcodeBufferRef.current = '';
-          // Open Fast Delivery with this scanned code
-          setFastDeliveryBarcode(scannedCode);
+        const potentialCode = barcodeBufferRef.current.trim();
+        if (potentialCode.length >= 4) {
+          e.preventDefault();
+          sound.playScanBeep();
+          setFastDeliveryBarcode(potentialCode);
           setIsFastDeliveryOpen(true);
         }
         barcodeBufferRef.current = '';
-      } else if (e.key.length === 1) {
-        // If typing speed is fast (<70ms between keys) or buffer is fresh
-        if (diff > 120 && barcodeBufferRef.current.length > 0) {
-          barcodeBufferRef.current = '';
-        }
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        // Collect alphanumeric barcode characters
         barcodeBufferRef.current += e.key;
+
+        // Auto-clear buffer after 500ms of inactivity
+        clearTimeout(clearTimer);
+        clearTimer = setTimeout(() => {
+          barcodeBufferRef.current = '';
+        }, 500);
       }
     };
 
     window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+      clearTimeout(clearTimer);
+    };
   }, []);
+
 
   // Save Reservation (New or Edit)
   const handleSaveReservation = (res: Reservation) => {
