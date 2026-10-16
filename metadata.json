@@ -1,0 +1,6 @@
+{
+  "name": "نظام حجز الكتب - مكتبة راية",
+  "description": "نظام متكامل لإدارة وحجز كتب المدرسين والسناتر والمكتبات مع دعم الباركود السريع، طباعة الإيصالات، تسليم الكتب، وإدارة حسابات الكاشير والأدمن والتقارير اليومية.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
