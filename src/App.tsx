@@ -9,17 +9,16 @@ import {
   FileText, 
   LogOut, 
   Plus, 
-  Bell, 
   CheckCircle2, 
   Menu, 
   X,
   Volume2,
-  VolumeX,
   RefreshCw,
-  QrCode
+  ShieldCheck,
+  AlertTriangle
 } from 'lucide-react';
 import { Book, Reservation, Student, User, InventoryAlertSettings } from './types';
-import { INITIAL_BOOKS, INITIAL_RESERVATIONS, INITIAL_STUDENTS, INITIAL_USERS } from './data/initialData';
+import { api } from './services/api';
 import { LoginScreen } from './components/LoginScreen';
 import { DashboardView } from './components/DashboardView';
 import { ReservationsView } from './components/ReservationsView';
@@ -27,6 +26,7 @@ import { BooksView } from './components/BooksView';
 import { ReportsView } from './components/ReportsView';
 import { StudentsView } from './components/StudentsView';
 import { InquiryView } from './components/InquiryView';
+import { UsersView } from './components/UsersView';
 import { NewReservationModal } from './components/NewReservationModal';
 import { BookModal } from './components/BookModal';
 import { ReceiptModal } from './components/ReceiptModal';
@@ -35,34 +35,24 @@ import { FastDeliveryModal } from './components/FastDeliveryModal';
 import { sound } from './utils/audio';
 
 export default function App() {
-  // State Initialization from localStorage or Initial Data
+  // Current logged in user
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('raya_current_user');
-    return saved ? JSON.parse(saved) : INITIAL_USERS[0]; // default logged in as admin for instant preview
+    return saved ? JSON.parse(saved) : { username: 'ادمن', name: 'المدير العام', role: 'admin' };
   });
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
 
-  const [reservations, setReservations] = useState<Reservation[]>(() => {
-    const saved = localStorage.getItem('raya_reservations');
-    return saved ? JSON.parse(saved) : INITIAL_RESERVATIONS;
+  // Core Data States (Synchronized with Backend API)
+  const [users, setUsers] = useState<User[]>([]);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [books, setBooks] = useState<Book[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
+  const [alertSettings, setAlertSettings] = useState<InventoryAlertSettings>({
+    minStockThreshold: 50,
+    soundEnabled: true,
   });
-
-  const [books, setBooks] = useState<Book[]>(() => {
-    const saved = localStorage.getItem('raya_books');
-    return saved ? JSON.parse(saved) : INITIAL_BOOKS;
-  });
-
-  const [students, setStudents] = useState<Student[]>(() => {
-    const saved = localStorage.getItem('raya_students');
-    return saved ? JSON.parse(saved) : INITIAL_STUDENTS;
-  });
-
-  // Low Stock Alert Settings
-  const [alertSettings, setAlertSettings] = useState<InventoryAlertSettings>(() => {
-    const saved = localStorage.getItem('raya_alert_settings');
-    return saved ? JSON.parse(saved) : { minStockThreshold: 100, soundEnabled: true };
-  });
+  const [isLoading, setIsLoading] = useState(true);
 
   // Modals state
   const [isNewReservationOpen, setIsNewReservationOpen] = useState(false);
@@ -80,13 +70,13 @@ export default function App() {
   const [isBookModalOpen, setIsBookModalOpen] = useState(false);
   const [bookToEdit, setBookToEdit] = useState<Book | null>(null);
 
-  // Success Toast Notification
+  // Toast Notification
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Mobile sidebar toggle
+  // Mobile drawer
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Sync state to localStorage
+  // Save current user to localStorage for instant session resumption
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem('raya_current_user', JSON.stringify(currentUser));
@@ -95,23 +85,6 @@ export default function App() {
     }
   }, [currentUser]);
 
-  useEffect(() => {
-    localStorage.setItem('raya_reservations', JSON.stringify(reservations));
-  }, [reservations]);
-
-  useEffect(() => {
-    localStorage.setItem('raya_books', JSON.stringify(books));
-  }, [books]);
-
-  useEffect(() => {
-    localStorage.setItem('raya_students', JSON.stringify(students));
-  }, [students]);
-
-  useEffect(() => {
-    localStorage.setItem('raya_alert_settings', JSON.stringify(alertSettings));
-  }, [alertSettings]);
-
-  // Toast trigger helper
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
@@ -119,8 +92,36 @@ export default function App() {
     }, 4000);
   };
 
+  // Initial Data Fetch from Backend Server
+  const loadAllData = async () => {
+    try {
+      setIsLoading(true);
+      const [fetchedUsers, fetchedReservations, fetchedBooks, fetchedStudents, fetchedSettings] =
+        await Promise.all([
+          api.getUsers(),
+          api.getReservations(),
+          api.getBooks(),
+          api.getStudents(),
+          api.getSettings(),
+        ]);
+
+      setUsers(fetchedUsers);
+      setReservations(fetchedReservations);
+      setBooks(fetchedBooks);
+      setStudents(fetchedStudents);
+      setAlertSettings(fetchedSettings);
+    } catch (err) {
+      console.error('Failed to load data from server:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAllData();
+  }, []);
+
   // Hardware Barcode Scanner Global Keypress Listener
-  // Handheld USB/Bluetooth barcode guns send keystrokes rapidly ending with Enter
   const barcodeBufferRef = useRef<string>('');
   const lastKeyTimeRef = useRef<number>(0);
 
@@ -128,18 +129,11 @@ export default function App() {
     let clearTimer: NodeJS.Timeout;
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      // If user is currently typing inside an input/textarea and the FastDeliveryModal is open,
-      // let the FastDeliveryModal handle it directly.
-      const target = e.target as HTMLElement;
-      const isInput =
-        target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
-
       const now = Date.now();
       const diff = now - lastKeyTimeRef.current;
       lastKeyTimeRef.current = now;
 
-      // Clear buffer if more than 350ms elapsed since last keystroke (manual human typing or idle)
+      // If buffer has been idle for > 350ms, start fresh
       if (diff > 350) {
         barcodeBufferRef.current = '';
       }
@@ -154,10 +148,7 @@ export default function App() {
         }
         barcodeBufferRef.current = '';
       } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-        // Collect alphanumeric barcode characters
         barcodeBufferRef.current += e.key;
-
-        // Auto-clear buffer after 500ms of inactivity
         clearTimeout(clearTimer);
         clearTimer = setTimeout(() => {
           barcodeBufferRef.current = '';
@@ -172,193 +163,205 @@ export default function App() {
     };
   }, []);
 
-
   // Save Reservation (New or Edit)
-  const handleSaveReservation = (res: Reservation) => {
-    if (reservationToEdit) {
-      // Edit existing
-      setReservations((prev) => prev.map((r) => (r.id === res.id ? res : r)));
-      showToast(`تم تحديث حجز الطالب "${res.studentName}" بنجاح`);
-    } else {
-      // Create new
-      setReservations((prev) => [res, ...prev]);
+  const handleSaveReservation = async (res: Reservation) => {
+    try {
+      if (reservationToEdit) {
+        // Edit existing
+        const updated = await api.updateReservation(res.id, res);
+        setReservations((prev) => prev.map((r) => (r.id === res.id ? updated : r)));
+        showToast(`تم تحديث حجز الطالب "${res.studentName}" بنجاح`);
+      } else {
+        // Create new
+        const created = await api.createReservation(res);
+        setReservations((prev) => [created, ...prev]);
 
-      // Decrement inventory stock & increment reserved count
-      setBooks((prev) =>
-        prev.map((b) => {
-          if (b.id === res.bookId) {
-            return {
-              ...b,
-              stock: Math.max(0, b.stock - res.quantity),
-              reservedCount: b.reservedCount + res.quantity,
-            };
-          }
-          return b;
-        })
-      );
-
-      // Add to student registry if not present
-      setStudents((prev) => {
-        const existing = prev.find((s) => s.phone === res.phone || s.name === res.studentName);
-        if (existing) {
-          return prev.map((s) =>
-            s.id === existing.id
+        // Decrement local book stock
+        setBooks((prev) =>
+          prev.map((b) =>
+            b.id === res.bookId
               ? {
-                  ...s,
-                  totalReservations: s.totalReservations + 1,
-                  totalSpent: s.totalSpent + res.paidAmount,
-                  lastActive: res.reservationDate,
+                  ...b,
+                  stock: Math.max(0, b.stock - res.quantity),
+                  reservedCount: (b.reservedCount || 0) + res.quantity,
                 }
-              : s
+              : b
+          )
+        );
+
+        // Check if stock dropped to or below threshold
+        const targetBook = books.find((b) => b.id === res.bookId);
+        const newStock = targetBook ? Math.max(0, targetBook.stock - res.quantity) : 0;
+        const threshold = targetBook?.minStockThreshold ?? alertSettings.minStockThreshold;
+
+        if (targetBook && newStock <= threshold) {
+          if (alertSettings.soundEnabled) {
+            sound.playLowStockAlert();
+          } else {
+            sound.playSuccess();
+          }
+          showToast(
+            `⚠️ تنبيه مخزون: متبقي ${newStock} نسخة فقط من كتاب "${targetBook.subject}" (الحد الأدنى: ${threshold})`
           );
         } else {
-          const newStudent: Student = {
-            id: `s-${Date.now()}`,
-            name: res.studentName,
-            phone: res.phone,
-            grade: res.grade,
-            totalReservations: 1,
-            totalSpent: res.paidAmount,
-            lastActive: res.reservationDate,
-          };
-          return [newStudent, ...prev];
-        }
-      });
-
-      // Check if this reservation causes the book's stock to reach or fall below threshold
-      const targetBook = books.find((b) => b.id === res.bookId);
-      const newStock = targetBook ? Math.max(0, targetBook.stock - res.quantity) : 0;
-      const threshold = targetBook?.minStockThreshold ?? alertSettings.minStockThreshold;
-      const isNowLowStock = targetBook && newStock <= threshold;
-
-      if (isNowLowStock) {
-        if (alertSettings.soundEnabled) {
-          sound.playLowStockAlert();
-        } else {
           sound.playSuccess();
+          showToast('تم الحجز بنجاح - تم تسجيل بيانات الحجز وتحديث المخزن');
         }
-        showToast(`⚠️ تنبيه انخفاض المخزون: متبقي ${newStock} نسخة فقط من كتاب "${targetBook.subject}" (الحد الأدنى: ${threshold})`);
-      } else {
-        sound.playSuccess();
-        showToast('تم الحجز بنجاح - تم تسجيل بيانات الحجز وتحديث المخزن');
+
+        // Open receipt modal
+        setActiveReceiptReservation(created);
+        setIsReceiptOpen(true);
       }
-
-      // Automatically open receipt preview modal as shown in video
-      setActiveReceiptReservation(res);
-      setIsReceiptOpen(true);
+      setIsNewReservationOpen(false);
+      setReservationToEdit(null);
+      // Refresh students
+      api.getStudents().then((st) => setStudents(st));
+    } catch (err: any) {
+      alert(err.message || 'فشل حفظ الحجز');
     }
-
-
-    setIsNewReservationOpen(false);
-    setReservationToEdit(null);
   };
 
   // Delete Reservation and restore book stock
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!reservationToDelete) return;
-
     const res = reservationToDelete;
-    setReservations((prev) => prev.filter((r) => r.id !== res.id));
 
-    // Restore stock if reservation was still reserved
-    if (res.status === 'reserved') {
-      setBooks((prev) =>
-        prev.map((b) => {
-          if (b.id === res.bookId) {
-            return {
-              ...b,
-              stock: b.stock + res.quantity,
-              reservedCount: Math.max(0, b.reservedCount - res.quantity),
-            };
-          }
-          return b;
-        })
-      );
+    try {
+      await api.deleteReservation(res.id);
+      setReservations((prev) => prev.filter((r) => r.id !== res.id));
+
+      if (res.status === 'reserved') {
+        setBooks((prev) =>
+          prev.map((b) =>
+            b.id === res.bookId
+              ? {
+                  ...b,
+                  stock: b.stock + res.quantity,
+                  reservedCount: Math.max(0, (b.reservedCount || 0) - res.quantity),
+                }
+              : b
+          )
+        );
+      }
+
+      sound.playSuccess();
+      showToast(`تم الحذف - تم إلغاء حجز الطالب "${res.studentName}" وإعادة ${res.quantity} نسخة للمخزون`);
+    } catch (err: any) {
+      alert(err.message || 'فشل حذف الحجز');
+    } finally {
+      setIsDeleteModalOpen(false);
+      setReservationToDelete(null);
     }
-
-    sound.playSuccess();
-    showToast(`تم الحذف - تم إلغاء حجز الطالب "${res.studentName}" وإعادة ${res.quantity} نسخة للمخزون`);
-    setIsDeleteModalOpen(false);
-    setReservationToDelete(null);
   };
 
   // Deliver Book
-  const handleDeliverReservation = (reservationId: string, collectRemaining = false) => {
-    const res = reservations.find((r) => r.id === reservationId);
-    if (!res) return;
+  const handleDeliverReservation = async (reservationId: string, collectRemaining = false) => {
+    try {
+      const updated = await api.deliverReservation(reservationId, collectRemaining);
+      setReservations((prev) => prev.map((r) => (r.id === reservationId ? updated : r)));
 
-    const now = new Date();
-    const dateStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;
-    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      // Update book delivered count
+      setBooks((prev) =>
+        prev.map((b) =>
+          b.id === updated.bookId
+            ? { ...b, deliveredCount: (b.deliveredCount || 0) + (updated.quantity || 1) }
+            : b
+        )
+      );
 
-    setReservations((prev) =>
-      prev.map((r) => {
-        if (r.id === reservationId) {
-          return {
-            ...r,
-            status: 'delivered',
-            deliveryDate: dateStr,
-            deliveryTime: timeStr,
-            paidAmount: collectRemaining ? r.totalPrice : r.paidAmount,
-            remainingAmount: collectRemaining ? 0 : r.remainingAmount,
-          };
-        }
-        return r;
-      })
-    );
-
-    // Update book delivered count
-    setBooks((prev) =>
-      prev.map((b) => {
-        if (b.id === res.bookId) {
-          return {
-            ...b,
-            deliveredCount: b.deliveredCount + res.quantity,
-          };
-        }
-        return b;
-      })
-    );
-
-    sound.playSuccess();
-    showToast(`تم تسليم الكتاب بنجاح للطالب "${res.studentName}"`);
+      sound.playSuccess();
+      showToast(`تم تسليم الكتاب بنجاح للطالب "${updated.studentName}"`);
+    } catch (err: any) {
+      alert(err.message || 'فشل تسليم الكتاب');
+    }
   };
 
   // Save Book (Add or Edit)
-  const handleSaveBook = (bookToSave: Book) => {
-    if (bookToEdit) {
-      setBooks((prev) => prev.map((b) => (b.id === bookToSave.id ? bookToSave : b)));
-      showToast(`تم تعديل بيانات كتاب "${bookToSave.subject}"`);
-    } else {
-      setBooks((prev) => [bookToSave, ...prev]);
-      showToast(`تمت إضافة كتاب جديد "${bookToSave.subject}" بنجاح`);
+  const handleSaveBook = async (bookToSave: Book) => {
+    try {
+      if (bookToEdit) {
+        const updated = await api.updateBook(bookToSave.id, bookToSave);
+        setBooks((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+        showToast(`تم تعديل بيانات كتاب "${bookToSave.subject}"`);
+      } else {
+        const created = await api.createBook(bookToSave);
+        setBooks((prev) => [created, ...prev]);
+        showToast(`تمت إضافة كتاب جديد "${bookToSave.subject}" بنجاح`);
+      }
+      setIsBookModalOpen(false);
+      setBookToEdit(null);
+    } catch (err: any) {
+      alert(err.message || 'فشل حفظ الكتاب');
     }
-    setIsBookModalOpen(false);
-    setBookToEdit(null);
   };
 
   // Delete Book
-  const handleDeleteBook = (bookId: string) => {
-    setBooks((prev) => prev.filter((b) => b.id !== bookId));
-    showToast('تم حذف الكتاب من النظام');
-  };
-
-  // Add stock
-  const handleAddStock = (bookId: string, amount: number) => {
-    setBooks((prev) =>
-      prev.map((b) => (b.id === bookId ? { ...b, stock: b.stock + amount } : b))
-    );
-    showToast(`تمت إضافة ${amount} نسخة إلى المخزون بنجاح`);
-  };
-
-  // Reset to initial demo data
-  const handleResetData = () => {
-    if (window.confirm('هل تريد استعادة البيانات الافتراضية الأصلية للنظام؟')) {
-      setReservations(INITIAL_RESERVATIONS);
-      setBooks(INITIAL_BOOKS);
-      setStudents(INITIAL_STUDENTS);
-      showToast('تمت استعادة البيانات التجريبية بنجاح');
+  const handleDeleteBook = async (bookId: string) => {
+    if (!window.confirm('هل أنت متأكد من حذف هذا الكتاب من النظام؟')) return;
+    try {
+      await api.deleteBook(bookId);
+      setBooks((prev) => prev.filter((b) => b.id !== bookId));
+      showToast('تم حذف الكتاب من النظام');
+    } catch (err: any) {
+      alert(err.message || 'فشل حذف الكتاب');
     }
+  };
+
+  // Add Book Stock
+  const handleAddStock = async (bookId: string, amount: number) => {
+    try {
+      const updated = await api.addBookStock(bookId, amount);
+      setBooks((prev) => prev.map((b) => (b.id === bookId ? updated : b)));
+      showToast(`تمت إضافة ${amount} نسخة إلى المخزون بنجاح`);
+    } catch (err: any) {
+      alert(err.message || 'فشل توريد المخزون');
+    }
+  };
+
+  // User Management Handlers (Admin)
+  const handleAddUser = async (newUser: Partial<User>) => {
+    const created = await api.createUser(newUser);
+    setUsers((prev) => [...prev, created]);
+    sound.playSuccess();
+    showToast(`تم إنشاء حساب المستخدم "${created.name}" بنجاح`);
+  };
+
+  const handleUpdateUser = async (id: string, updatedFields: Partial<User>) => {
+    const updated = await api.updateUser(id, updatedFields);
+    setUsers((prev) => prev.map((u) => (u.id === id ? updated : u)));
+    sound.playSuccess();
+    showToast(`تم تحديث بيانات المستخدم "${updated.name}"`);
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    if (!window.confirm('هل أنت متأكد من حذف هذا المستخدم؟')) return;
+    await api.deleteUser(id);
+    setUsers((prev) => prev.filter((u) => u.id !== id));
+    sound.playSuccess();
+    showToast('تم حذف المستخدم بنجاح');
+  };
+
+  // Wipe All Reservations for Production Fresh Start
+  const handleClearAllReservations = async () => {
+    try {
+      const res = await api.clearAllReservations();
+      setReservations([]);
+      setStudents([]);
+      // Reset books counters
+      setBooks((prev) =>
+        prev.map((b) => ({ ...b, reservedCount: 0, deliveredCount: 0 }))
+      );
+      sound.playSuccess();
+      showToast(res.message || 'تم تنظيف كافة الحجوزات وبدء سجل الإنتاج بنجاح');
+    } catch (err: any) {
+      alert(err.message || 'فشل تنظيف السجل');
+    }
+  };
+
+  // Update Settings
+  const handleUpdateSettings = async (newSettings: InventoryAlertSettings) => {
+    setAlertSettings(newSettings);
+    await api.updateSettings(newSettings);
   };
 
   // If user is not logged in, show Login Screen
@@ -370,28 +373,27 @@ export default function App() {
   const navItems = [
     { id: 'dashboard', label: 'لوحة التحكم', icon: LayoutDashboard, adminOnly: true },
     { id: 'reservations', label: 'الحجوزات', icon: Bookmark, adminOnly: false },
-    { id: 'delivery', label: 'التسليم بالباركود', icon: Scan, adminOnly: true },
+    { id: 'delivery', label: 'التسليم بالباركود', icon: Scan, adminOnly: false },
     { id: 'books', label: 'الكتب والملازم', icon: BookOpen, adminOnly: true },
     { id: 'students', label: 'الطلاب', icon: Users, adminOnly: true },
     { id: 'inquiry', label: 'الاستعلام', icon: Search, adminOnly: true },
     { id: 'reports', label: 'التقارير', icon: FileText, adminOnly: true },
+    { id: 'users', label: 'المستخدمين والصلاحيات', icon: ShieldCheck, adminOnly: true },
   ];
 
-  // Cashier only sees reservations or allowed tabs
   const allowedNavItems =
     currentUser.role === 'admin'
       ? navItems
-      : navItems.filter((item) => !item.adminOnly || item.id === 'reservations');
+      : navItems.filter((item) => !item.adminOnly || item.id === 'reservations' || item.id === 'delivery');
 
-  // If cashier tries to visit admin page, redirect to reservations
   const effectiveTab =
-    currentUser.role === 'cashier' && activeTab !== 'reservations'
+    currentUser.role === 'cashier' && activeTab !== 'reservations' && activeTab !== 'delivery'
       ? 'reservations'
       : activeTab;
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col font-sans" dir="rtl">
-      {/* Toast Notification Popup matching video */}
+      {/* Toast Notification Popup */}
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl border border-slate-700 flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 duration-200">
           <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
@@ -401,12 +403,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Viewport Container */}
+      {/* Main Container */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Right Sidebar (Desktop) matching video layout */}
-        <aside className="w-64 bg-white border-l border-slate-200 shadow-xs flex-col justify-between hidden md:flex shrink-0">
+        {/* Right Sidebar (Desktop) */}
+        <aside className="w-64 bg-white border-l border-slate-200 shadow-xs flex flex-col justify-between hidden md:flex shrink-0">
           <div>
-            {/* Library Branding Header matching video */}
+            {/* Library Branding Header */}
             <div className="p-5 border-b border-slate-100 flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
                 <BookOpen className="w-5 h-5" />
@@ -421,7 +423,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Navigation List matching video menu items */}
+            {/* Navigation List */}
             <nav className="p-3 space-y-1">
               {allowedNavItems.map((item) => {
                 const Icon = item.icon;
@@ -502,9 +504,9 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={handleResetData}
+                onClick={loadAllData}
                 className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-                title="استعادة البيانات الأصلية"
+                title="تحديث البيانات من الخادم"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
@@ -514,7 +516,7 @@ export default function App() {
 
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
-          {/* Top Bar matching video */}
+          {/* Top Bar */}
           <header className="bg-white border-b border-slate-200 px-6 py-3.5 flex items-center justify-between gap-4 sticky top-0 z-20">
             <div className="flex items-center gap-3">
               {/* Mobile menu toggle */}
@@ -531,8 +533,8 @@ export default function App() {
                   {currentUser.role === 'cashier' ? 'شاشة الكاشير السريعة' : 'نظام مكتبة راية'}
                 </span>
                 <span className="hidden sm:inline-block text-xs text-slate-400">|</span>
-                <span className="hidden sm:inline-block text-xs text-slate-500 font-mono">
-                  2026/10/16
+                <span className="hidden sm:inline-block text-xs text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
+                  خادم مباشر (Live Production)
                 </span>
               </div>
             </div>
@@ -614,14 +616,14 @@ export default function App() {
             </div>
           )}
 
-          {/* Active Tab View Body */}
+          {/* Main Views */}
           <main className="p-6 max-w-7xl w-full mx-auto">
             {effectiveTab === 'dashboard' && (
               <DashboardView
                 reservations={reservations}
                 books={books}
                 alertSettings={alertSettings}
-                onUpdateAlertSettings={setAlertSettings}
+                onUpdateAlertSettings={handleUpdateSettings}
                 onAddStock={handleAddStock}
                 onOpenNewReservation={() => {
                   setReservationToEdit(null);
@@ -638,7 +640,6 @@ export default function App() {
                 }}
               />
             )}
-
 
             {effectiveTab === 'reservations' && (
               <ReservationsView
@@ -691,7 +692,7 @@ export default function App() {
               <StudentsView
                 students={students}
                 reservations={reservations}
-                onSelectStudent={(studentName) => {
+                onSelectStudent={() => {
                   setActiveTab('reservations');
                 }}
               />
@@ -705,6 +706,17 @@ export default function App() {
                   setIsReceiptOpen(true);
                 }}
                 onDeliver={(id) => handleDeliverReservation(id)}
+              />
+            )}
+
+            {effectiveTab === 'users' && (
+              <UsersView
+                users={users}
+                currentUserId={currentUser.id}
+                onAddUser={handleAddUser}
+                onUpdateUser={handleUpdateUser}
+                onDeleteUser={handleDeleteUser}
+                onClearAllReservations={handleClearAllReservations}
               />
             )}
           </main>
@@ -727,7 +739,7 @@ export default function App() {
         initialReservation={reservationToEdit}
       />
 
-      {/* Book Modal (Add / Edit) */}
+      {/* Book Modal */}
       <BookModal
         isOpen={isBookModalOpen}
         onClose={() => {
@@ -738,7 +750,7 @@ export default function App() {
         initialBook={bookToEdit}
       />
 
-      {/* Receipt Modal (matching video receipt) */}
+      {/* Receipt Modal */}
       <ReceiptModal
         isOpen={isReceiptOpen}
         onClose={() => {

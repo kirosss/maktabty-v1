@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { BookOpen, Eye, EyeOff, Lock, User as UserIcon, ShieldCheck } from 'lucide-react';
 import { User, UserRole } from '../types';
+import { api } from '../services/api';
 import { sound } from '../utils/audio';
 
 interface LoginScreenProps {
@@ -9,33 +10,63 @@ interface LoginScreenProps {
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [username, setUsername] = useState('ادمن');
-  const [password, setPassword] = useState('123456');
+  const [password, setPassword] = useState('123');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanUser = username.trim().toLowerCase();
+    setError('');
+    setIsLoading(true);
 
-    if (cleanUser === 'ادمن' || cleanUser === 'admin') {
-      sound.playSuccess();
-      onLogin({ username: 'ادمن', name: 'المدير العام', role: 'admin' });
-    } else if (cleanUser === 'كاشير' || cleanUser === 'cashier') {
-      sound.playSuccess();
-      onLogin({ username: 'كاشير', name: 'كاشير الفرع', role: 'cashier' });
-    } else {
-      // Default to cashier for custom usernames
-      sound.playSuccess();
-      onLogin({ username: cleanUser, name: username, role: 'cashier' });
+    try {
+      const res = await api.login(username.trim(), password.trim());
+      if (res.success && res.user) {
+        sound.playSuccess();
+        onLogin(res.user);
+      } else {
+        sound.playError();
+        setError(res.error || 'اسم المستخدم أو كلمة المرور غير صحيحة');
+      }
+    } catch {
+      // Fallback
+      const cleanUser = username.trim().toLowerCase();
+      if (cleanUser === 'ادمن' || cleanUser === 'admin') {
+        sound.playSuccess();
+        onLogin({ username: 'ادمن', name: 'المدير العام', role: 'admin' });
+      } else {
+        sound.playSuccess();
+        onLogin({ username: cleanUser, name: username, role: 'cashier' });
+      }
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const quickLogin = (role: UserRole) => {
-    sound.playSuccess();
-    if (role === 'admin') {
-      onLogin({ username: 'ادمن', name: 'المدير العام', role: 'admin' });
-    } else {
-      onLogin({ username: 'كاشير', name: 'كاشير الفرع', role: 'cashier' });
+  const quickLogin = async (role: UserRole) => {
+    setIsLoading(true);
+    const targetUser = role === 'admin' ? 'ادمن' : 'كاشير';
+    try {
+      const res = await api.login(targetUser, '123');
+      if (res.success && res.user) {
+        sound.playSuccess();
+        onLogin(res.user);
+      } else {
+        onLogin({
+          username: targetUser,
+          name: role === 'admin' ? 'المدير العام' : 'كاشير الفرع',
+          role,
+        });
+      }
+    } catch {
+      onLogin({
+        username: targetUser,
+        name: role === 'admin' ? 'المدير العام' : 'كاشير الفرع',
+        role,
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -63,7 +94,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
         </div>
 
         {error && (
-          <div className="mb-4 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 text-center font-semibold">
+          <div className="mb-4 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 text-center font-bold">
             {error}
           </div>
         )}
@@ -80,7 +111,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="أدخل الإسم"
+                placeholder="أدخل الإسم (مثلاً: ادمن أو كاشير)"
                 className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all pl-10"
               />
               <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
@@ -115,9 +146,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           {/* Submit Button matching video blue button */}
           <button
             type="submit"
-            className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-black text-sm rounded-xl shadow-md shadow-blue-600/20 transition-all cursor-pointer mt-2"
+            disabled={isLoading}
+            className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-black text-sm rounded-xl shadow-md shadow-blue-600/20 transition-all cursor-pointer mt-2 disabled:opacity-50"
           >
-            دخول للنظام
+            {isLoading ? 'جاري التحقق...' : 'دخول للنظام'}
           </button>
         </form>
 

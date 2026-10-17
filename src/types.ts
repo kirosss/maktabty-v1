@@ -1,10 +1,15 @@
 export type UserRole = 'admin' | 'cashier';
 
 export interface User {
+  id?: string;
   username: string;
   name: string;
   role: UserRole;
+  password?: string;
+  status?: 'active' | 'inactive';
+  createdAt?: string;
 }
+
 
 export interface Book {
   id: string;
